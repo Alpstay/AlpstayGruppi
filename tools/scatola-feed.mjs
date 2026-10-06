@@ -65,6 +65,7 @@ var DEFAULT_SETTINGS = {
   scatolaHorizonDays: 540,
   scatolaKey: "",
   feedApplied: "",
+  feedLogic: 0,
   bankDetails: "",
   dinnerMenus: DEFAULT_DINNER_MENUS.map((m) => ({ ...m })),
   mapping: {},
@@ -741,6 +742,8 @@ function buildCluster(property, rows, linkedBy, settings) {
     linkedBy
   };
 }
+var PERIOD_GAP_DAYS = 1;
+var samePeriod = (end, arrival) => arrival <= addDays(end, PERIOD_GAP_DAYS);
 function detectClusters(rows, settings, timeMode) {
   const out = [];
   for (const property of PROPERTY_IDS) {
@@ -766,7 +769,26 @@ function detectClusters(rows, settings, timeMode) {
     byKey((r) => validRef(r) ? r.channelRef : null, "ref");
     if (timeMode === "time") {
       const timed = rs.map((r, i) => ({ i, s: r.createdAt && r.hasTime ? wallSeconds(r.createdAt) : NaN })).filter((x) => !Number.isNaN(x.s)).sort((a, b) => a.s - b.s);
-      for (let k = 1; k < timed.length; k++) if (timed[k].s - timed[k - 1].s <= settings.toleranceSec) link(timed[k - 1].i, timed[k].i, "time");
+      let chain = [];
+      const flush = () => {
+        const byArrival = chain.slice().sort((a, b) => rs[a].arrival.localeCompare(rs[b].arrival) || a - b);
+        let prev = -1;
+        let end = "";
+        for (const i of byArrival) {
+          const r = rs[i];
+          if (prev >= 0 && samePeriod(end, r.arrival)) {
+            link(prev, i, "time");
+            if (r.departure > end) end = r.departure;
+          } else end = r.departure;
+          prev = i;
+        }
+        chain = [];
+      };
+      timed.forEach((t, k) => {
+        if (k > 0 && t.s - timed[k - 1].s > settings.toleranceSec) flush();
+        chain.push(t.i);
+      });
+      flush();
     }
     byKey((r) => {
       if (!r.createdAt || r.hasTime) return null;
@@ -813,6 +835,11 @@ function sortBookings(list) {
 }
 function emptyStep() {
   return { done: false, at: null, by: null, auto: false };
+}
+function isImportMark(st) {
+  if (!st || !st.done || st.auto || !st.at) return false;
+  const d = new Date(st.at);
+  return !Number.isNaN(d.getTime()) && d.getHours() === 12 && d.getMinutes() === 0 && d.getSeconds() === 0 && d.getMilliseconds() === 0;
 }
 function groupIdFor(c) {
   const stamp = c.bookedAt ? c.bookedAt.replace(/[-T:]/g, "").slice(0, 12) : `a${c.arrival.replace(/-/g, "")}`;
@@ -1020,7 +1047,7 @@ function reconcile(clusters, existing, settings, ctx) {
     for (const id of c.ids) set.add(id);
     known.set(c.property, set);
   }
-  for (const c of clusters) {
+  const targetOf = (c) => {
     const counts = /* @__PURE__ */ new Map();
     for (const id of c.ids) {
       const gid = idIndex.get(`${c.property}|${id}`);
@@ -1034,6 +1061,42 @@ function reconcile(clusters, existing, settings, ctx) {
         target = gid;
       }
     });
+    return target;
+  };
+  const detached = /* @__PURE__ */ new Set();
+  const dropIds = /* @__PURE__ */ new Map();
+  const byTarget = /* @__PURE__ */ new Map();
+  for (const c of clusters) {
+    const t = targetOf(c);
+    if (t) byTarget.set(t, [...byTarget.get(t) || [], c]);
+  }
+  byTarget.forEach((list, gid) => {
+    if (list.length < 2) return;
+    const periods = [];
+    for (const c of list.slice().sort((a, b) => a.arrival.localeCompare(b.arrival))) {
+      const last = periods[periods.length - 1];
+      if (last && samePeriod(last.end, c.arrival)) {
+        last.clusters.push(c);
+        last.rooms += c.roomsActive;
+        if (c.departure > last.end) last.end = c.departure;
+      } else periods.push({ clusters: [c], end: c.departure, rooms: c.roomsActive });
+    }
+    if (periods.length < 2) return;
+    let keep = periods[0];
+    for (const p of periods) if (p.rooms > keep.rooms) keep = p;
+    const drop = /* @__PURE__ */ new Set();
+    for (const p of periods) {
+      if (p === keep) continue;
+      for (const c of p.clusters) {
+        detached.add(c);
+        for (const id of c.ids) drop.add(id);
+      }
+    }
+    dropIds.set(gid, drop);
+  });
+  const fromSplit = /* @__PURE__ */ new Set();
+  for (const c of clusters) {
+    let target = detached.has(c) ? null : targetOf(c);
     const forced = Boolean(ctx.force && ctx.force.has(clusterKey(c)));
     if (target === null && (c.isGroup || forced)) {
       if (c.departure < ctx.today) {
@@ -1047,6 +1110,7 @@ function reconcile(clusters, existing, settings, ctx) {
         working.set(g2.id, g2);
         created.add(g2.id);
         touched.add(g2.id);
+        if (detached.has(c)) fromSplit.add(g2.id);
         for (const id of c.ids) idIndex.set(`${c.property}|${id}`, g2.id);
         continue;
       }
@@ -1057,6 +1121,13 @@ function reconcile(clusters, existing, settings, ctx) {
     }
     const g = working.get(target);
     if (!g) continue;
+    const drop = dropIds.get(target);
+    if (drop && !fromSplit.has(target)) {
+      g.bookings = g.bookings.filter((b) => !drop.has(b.slopeId));
+      g.sourceIds = g.sourceIds.filter((id) => !drop.has(id));
+      for (const k of STEP_ORDER) if (isImportMark(g.steps[k])) g.steps[k] = emptyStep();
+      fromSplit.add(target);
+    }
     if (source === "scatola") mergePartial(g, c, settings, ctx.now, ctx.arrivalRange[c.property], known.get(c.property) || /* @__PURE__ */ new Set());
     else mergeCluster(g, c, settings, ctx.now);
     touched.add(target);
@@ -1083,12 +1154,13 @@ function reconcile(clusters, existing, settings, ctx) {
     const after = working.get(id);
     if (!after) return;
     if (created.has(id)) {
-      if (ctx.markPastDone) markOverdueDone(after, settings, ctx.regulars, ctx.today, ctx.userId, 3);
+      if (ctx.markPastDone || fromSplit.has(id)) markOverdueDone(after, settings, ctx.regulars, ctx.today, ctx.userId, 3);
       ops.push({ kind: "create", id, record: after, before: null, patch: null });
       return;
     }
     const prev = before.get(id);
     if (!prev) return;
+    if (fromSplit.has(id)) markOverdueDone(after, settings, ctx.regulars, ctx.today, ctx.userId, 3);
     const patch = diffPatch(prev, after);
     if (!patch) {
       unchanged++;
