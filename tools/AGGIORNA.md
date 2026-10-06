@@ -18,11 +18,13 @@ siano complete e scrive il file cifrato.
   ricopiano a mano**: non salvarle tu in un file, non riassumerle, non riscriverle. Ci pensa il programma.
 - Gli argomenti stampati dal programma si copiano **identici** nella chiamata allo strumento
   (stessi filtri, stesso cursore, stesso `limit`). Non aggiungere e non togliere nulla.
-- Il repository è pubblico: si pubblica solo `scatola.json` (cifrato). Nessun dato di prenotazioni o
-  ospiti va in altri file, nel messaggio di commit o nel riepilogo. La chiave non va scritta in nessun file.
+- Il repository è pubblico: si pubblicano solo `scatola.json` (cifrato) e `scatola-stato.json` (esito
+  dell'esecuzione, scritto dal programma, senza dati personali). Nessun dato di prenotazioni o ospiti va
+  in altri file, nel messaggio di commit o nel riepilogo. La chiave non va scritta in nessun file.
 - Non modificare `index.html` né i file in `tools/`.
-- Se il programma risponde `ERRORE`, non pubblicare: riporta il messaggio nel riepilogo. La pagina
-  online continua a usare i dati dell'ultimo aggiornamento riuscito e avvisa se sono vecchi.
+- Se il programma risponde `ERRORE`, non pubblicare `scatola.json`: pubblica solo `scatola-stato.json`
+  (il programma ci ha scritto il motivo) e riporta il messaggio nel riepilogo. La pagina online continua
+  a usare i dati dell'ultimo aggiornamento riuscito e avvisa se sono vecchi.
 
 ## Passi
 
@@ -33,10 +35,12 @@ siano complete e scrive il file cifrato.
      poi riesegui `next`. Se lo strumento dà errore, riesegui `next`: ripropone la stessa chiamata
      (dopo tre errori di fila si ferma da solo).
    - `PRONTO`: il file `scatola.json` è scritto e verificato. Vai al passo 3.
-   - `ERRORE`: fermati e riporta il messaggio.
+   - `ERRORE`: fermati, pubblica solo `scatola-stato.json` (passo 3, senza `scatola.json`) e riporta il messaggio.
    Servono di solito 30–40 chiamate (la prima volta circa 70). Non fermarti a metà.
-3. Pubblica: `git add scatola.json`, commit `Dati La Scatola <AAAA-MM-GG>`, `git push origin HEAD:main`.
-   Se il push è rifiutato (errore 403) non insistere: scrivilo nel riepilogo.
+3. Pubblica: `git add scatola.json scatola-stato.json` (con `ERRORE` solo `scatola-stato.json`), commit
+   `Dati La Scatola <AAAA-MM-GG>`, `git push origin HEAD:main`. Se il push è rifiutato perché nel
+   frattempo il repository è cambiato, fai `git pull --rebase origin main` e riprova una volta. Se è
+   rifiutato con errore 403 non insistere: scrivilo nel riepilogo.
 4. Riepilogo breve in italiano: pubblicato sì/no, e le righe `RIEPILOGO` stampate dal programma
    (non contengono dati personali).
 

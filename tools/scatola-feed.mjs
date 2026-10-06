@@ -1,7 +1,7 @@
 // scripts/scatola-feed-cli.ts
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 // src/defaults.ts
 var PROPERTY_IDS = ["saslong", "acadia", "hartmann"];
@@ -1217,9 +1217,20 @@ var BOOTSTRAP_BY_DATE = 400;
 var FRESHNESS_RANK = { fresh: 0, unknown: 1, stale: 2, failing: 3 };
 var isRecord3 = (x) => typeof x === "object" && x !== null && !Array.isArray(x);
 var text2 = (x) => typeof x === "string" ? x.trim() : "";
+var STATUS_FILE = "scatola-stato.json";
+function writeStatus(ok, message, extra = {}) {
+  try {
+    if (!existsSync(RUN_FILE)) return;
+    const run = JSON.parse(readFileSync(RUN_FILE, "utf8"));
+    writeFileSync(join(dirname(run.out), STATUS_FILE), `${JSON.stringify({ at: (/* @__PURE__ */ new Date()).toISOString(), ok, messaggio: message, ...extra })}
+`);
+  } catch {
+  }
+}
 function fail(message) {
   console.log(`ERRORE: ${message}`);
-  console.log("Non pubblicare nulla. Riporta questo messaggio nel riepilogo.");
+  writeStatus(false, message);
+  console.log(`Non pubblicare scatola.json. Pubblica solo ${STATUS_FILE} (dice perché l'aggiornamento non è arrivato) e riporta questo messaggio nel riepilogo.`);
   process.exit(2);
 }
 function romeToday(now) {
@@ -1489,7 +1500,8 @@ async function next(args) {
 `);
   summary(snap, previous, needed.filter((id) => read.has(id)).length, needed.filter((id) => !read.has(id)).length);
   console.log(`verifica OK: scritto ${run.out} (${Math.round(statSync(run.out).size / 1024)} KB, cifrato).`);
-  console.log("PRONTO: pubblica solo questo file (git add, commit, push).");
+  writeStatus(true, "Dati pubblicati.", { generated: snap.fetchedAt, camere: rows.length, ordini: snap.balances.length, chiamate: calls.length });
+  console.log(`PRONTO: pubblica scatola.json e ${STATUS_FILE} (git add, commit, push).`);
 }
 async function verify(args) {
   const [file, key] = args;
