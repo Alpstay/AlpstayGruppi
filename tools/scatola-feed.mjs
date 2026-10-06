@@ -1318,23 +1318,45 @@ function flag(args, name) {
   const i = args.indexOf(name);
   return i >= 0 && i + 1 < args.length ? args[i + 1] : null;
 }
-function findTranscript() {
-  const root = join(homedir(), ".claude", "projects");
-  let best = null;
-  if (existsSync(root)) {
-    for (const dir of readdirSync(root)) {
-      const d = join(root, dir);
-      if (!statSync(d).isDirectory()) continue;
-      for (const f of readdirSync(d)) {
-        if (!f.endsWith(".jsonl")) continue;
-        const p = join(d, f);
-        const m = statSync(p).mtimeMs;
-        if (!best || m > best.mtime) best = { path: p, mtime: m };
-      }
+function transcripts() {
+  const out = [];
+  const walk = (dir, depth) => {
+    let names = [];
+    try {
+      names = readdirSync(dir);
+    } catch {
+      return;
     }
-  }
-  if (!best) fail(`non trovo il registro della sessione in ${root}. Passa il percorso con --transcript a "start".`);
-  return best.path;
+    for (const name of names) {
+      const p = join(dir, name);
+      let st;
+      try {
+        st = statSync(p);
+      } catch {
+        continue;
+      }
+      if (st.isDirectory()) {
+        if (depth < 5) walk(p, depth + 1);
+      } else if (name.endsWith(".jsonl")) out.push({ path: p, mtime: st.mtimeMs });
+    }
+  };
+  walk(join(homedir(), ".claude", "projects"), 0);
+  return out.sort((a, b) => b.mtime - a.mtime);
+}
+var transcriptNote = "";
+function findTranscript(run) {
+  const all = transcripts();
+  if (!all.length) fail(`non trovo nessun registro di sessione in ${join(homedir(), ".claude", "projects")}. Passa il percorso con --transcript a "start".`);
+  const marked = all.filter((t) => {
+    try {
+      return readFileSync(t.path, "utf8").includes(run.token);
+    } catch {
+      return false;
+    }
+  });
+  const chosen = marked[0] || all[0];
+  transcriptNote = `registro ${chosen.path} (${marked.length ? "contiene" : "NON contiene"} il segno di questa esecuzione; registri trovati: ${all.length})`;
+  return chosen.path;
 }
 function resultText(content) {
   if (typeof content === "string") return content;
@@ -1418,7 +1440,17 @@ function worst(calls) {
   for (const c of calls) if (c.page && FRESHNESS_RANK[c.page.freshness] > FRESHNESS_RANK[w]) w = c.page.freshness;
   return w;
 }
+var MAX_SAME_ASK = 4;
 function ask(input, what) {
+  try {
+    const run = JSON.parse(readFileSync(RUN_FILE, "utf8"));
+    const key = JSON.stringify(input);
+    const count = run.lastAsk && run.lastAsk.key === key ? run.lastAsk.count + 1 : 1;
+    writeFileSync(RUN_FILE, JSON.stringify({ ...run, lastAsk: { key, count } }), { mode: 384 });
+    if (count > MAX_SAME_ASK) fail(`il programma ha chiesto ${count} volte la stessa interrogazione (${String(input.view)}) senza vederne la risposta: ${transcriptNote || "registro non determinato"}.`);
+  } catch (e) {
+    if (e instanceof Error && e.message === "exit") throw e;
+  }
   console.log(`PROSSIMO PASSO: ${what}`);
   console.log('CHIAMA lo strumento query_curated_view del connettore La Scatola con ESATTAMENTE questi argomenti (copia e incolla, senza cambiare nulla), poi riesegui "next":');
   console.log(JSON.stringify(input));
@@ -1440,10 +1472,11 @@ function start(args) {
   if (!Number.isInteger(days) || days < 30 || days > 730) fail("--days deve essere tra 30 e 730.");
   const today = flag(args, "--today") || romeToday(/* @__PURE__ */ new Date());
   const transcript = flag(args, "--transcript");
-  const run = { since: (/* @__PURE__ */ new Date()).toISOString(), from: today, to: shiftDay(today, days), key, out: resolve(flag(args, "--out") || "scatola.json"), transcript: transcript ? resolve(transcript) : null, today, byDateOver: Number(flag(args, "--by-date-over") || BOOTSTRAP_BY_DATE) };
+  const token = `esecuzione-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  const run = { since: (/* @__PURE__ */ new Date()).toISOString(), from: today, to: shiftDay(today, days), key, out: resolve(flag(args, "--out") || "scatola.json"), transcript: transcript ? resolve(transcript) : null, today, byDateOver: Number(flag(args, "--by-date-over") || BOOTSTRAP_BY_DATE), token };
   mkdirSync(WORK, { recursive: true });
   writeFileSync(RUN_FILE, JSON.stringify(run), { mode: 384 });
-  console.log(`Avviato: arrivi dal ${run.from} al ${run.to}, file ${run.out}.`);
+  console.log(`Avviato [${token}]: arrivi dal ${run.from} al ${run.to}, file ${run.out}.`);
   console.log('Ora esegui "node tools/scatola-feed.mjs next" e segui quello che dice, ripetendo finché risponde PRONTO oppure ERRORE.');
 }
 function loadRun() {
@@ -1472,7 +1505,9 @@ function summary(snap, previous, fresh, cached) {
 async function next(args) {
   const run = loadRun();
   const force = args.includes("--force");
-  const calls = readCalls(run.transcript || findTranscript(), run.since);
+  const calls = readCalls(run.transcript || findTranscript(run), run.since);
+  if (run.transcript) transcriptNote = `registro ${run.transcript} (indicato a mano)`;
+  transcriptNote += `; interrogazioni viste finora: ${calls.length}`;
   const broken = (c, what) => {
     if (c.failures >= MAX_FAILURES) fail(`${what}: ${c.failures} tentativi falliti. Ultimo errore: ${calls.filter((x) => !x.page).pop()?.error || "sconosciuto"}`);
   };
@@ -1572,7 +1607,7 @@ async function next(args) {
 `);
   summary(snap, previous, needed.filter((id) => read.has(id)).length, needed.filter((id) => !read.has(id)).length);
   console.log(`verifica OK: scritto ${run.out} (${Math.round(statSync(run.out).size / 1024)} KB, cifrato).`);
-  writeStatus(true, "Dati pubblicati.", { generated: snap.fetchedAt, camere: rows.length, ordini: snap.balances.length, chiamate: calls.length });
+  writeStatus(true, "Dati pubblicati.", { generated: snap.fetchedAt, camere: rows.length, ordini: snap.balances.length, chiamate: calls.length, nota: transcriptNote });
   console.log(`PRONTO: pubblica scatola.json e ${STATUS_FILE} (git add, commit, push).`);
 }
 async function verify(args) {
