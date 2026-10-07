@@ -39,8 +39,12 @@ siano complete e scrive il file cifrato.
    Servono di solito 30–40 chiamate (la prima volta circa 70). Non fermarti a metà.
 3. Pubblica: `git add scatola.json scatola-stato.json` (con `ERRORE` solo `scatola-stato.json`), commit
    `Dati La Scatola <AAAA-MM-GG>`, `git push origin HEAD:main`. Se il push è rifiutato perché nel
-   frattempo il repository è cambiato, fai `git pull --rebase origin main` e riprova una volta. Se è
-   rifiutato con errore 403 non insistere: scrivilo nel riepilogo.
+   frattempo il repository è cambiato, non fare rebase né merge: copia `scatola.json` e
+   `scatola-stato.json` in una cartella temporanea fuori dal repository, `git fetch origin main`,
+   `git reset --hard origin/main`, rimetti al loro posto i due file (con `ERRORE` solo
+   `scatola-stato.json`), poi di nuovo add, commit e push. Una volta sola. Se è rifiutato con errore 403
+   non insistere: scrivilo nel riepilogo.
+   Dopo il push controlla con `git log origin/main -1` che il commit sia arrivato.
 4. Riepilogo breve in italiano: pubblicato sì/no, e le righe `RIEPILOGO` stampate dal programma
    (non contengono dati personali).
 
@@ -50,6 +54,9 @@ siano complete e scrive il file cifrato.
   non lo trova, passa il percorso a `start` con `--transcript <file>`.
 - Se La Scatola cambia i dati durante la lettura dei soggiorni il programma chiede di rileggerli da
   capo: è normale, basta seguire le sue indicazioni.
+- Le risposte grandi il sistema le mette da parte in un file e nel messaggio lascia solo il percorso
+  (`Output has been saved to …` oppure `<persisted-output> … Full output saved to: …`): il programma
+  le legge da solo in entrambe le forme. Non serve aprirle.
 - `node tools/scatola-feed.mjs verify scatola.json "<CHIAVE>"` controlla un file già scritto.
 - Il programma è generato dai sorgenti TypeScript dell'app (`scripts/scatola-feed-cli.ts`): non si
   modifica a mano.
