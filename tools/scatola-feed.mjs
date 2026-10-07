@@ -1,7 +1,7 @@
 // scripts/scatola-feed-cli.ts
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
 // src/defaults.ts
 var PROPERTY_IDS = ["saslong", "acadia", "hartmann"];
@@ -1284,6 +1284,7 @@ var WORK = join(tmpdir(), "alpstay-gruppi-feed");
 var RUN_FILE = join(WORK, "run.json");
 var IN_LIMIT = 50;
 var PAGE_LIMIT = 500;
+var GUEST_LIMIT = 15;
 var MAX_FAILURES = 3;
 var BOOTSTRAP_BY_DATE = 400;
 var FRESHNESS_RANK = { fresh: 0, unknown: 1, stale: 2, failing: 3 };
@@ -1363,18 +1364,41 @@ function resultText(content) {
   if (Array.isArray(content)) return content.map((b) => isRecord3(b) && typeof b.text === "string" ? b.text : "").join("");
   return "";
 }
-function parseResult(body) {
-  let raw = body.trim();
-  const saved = /saved to (\/\S+?\.(?:txt|json))(?=[.\s]|$)/.exec(raw);
-  if (!raw.startsWith("{") && saved) {
-    if (!existsSync(saved[1])) return { page: null, error: `file della risposta non trovato: ${saved[1]}` };
-    raw = readFileSync(saved[1], "utf8").trim();
-  }
-  if (!raw.startsWith("{")) return { page: null, error: raw.slice(0, 200) || "risposta vuota" };
+var SAVED_PATH = /saved to:?\s+(\/\S+?\.(?:txt|json))(?=[.,;)\s]|$)/i;
+function payloadOf(body, depth = 0) {
+  const t = body.trim();
+  if (!t || depth > 3 || !/^[{["]/.test(t)) return void 0;
+  let v;
   try {
-    return { page: parseScatolaPayload(JSON.parse(raw)), error: null };
+    v = JSON.parse(t);
+  } catch {
+    return void 0;
+  }
+  if (typeof v === "string") return payloadOf(v, depth + 1);
+  if (Array.isArray(v)) return payloadOf(v.map((b) => isRecord3(b) && typeof b.text === "string" ? b.text : "").join(""), depth + 1);
+  return isRecord3(v) ? v : void 0;
+}
+function unreadable(raw) {
+  if (!raw) return "risposta vuota";
+  const looksLikeData = raw.length > 240 || /persisted-output|preview|"data"|[{[]/i.test(raw);
+  return looksLikeData ? `risposta in una forma non riconosciuta (${raw.length} caratteri)` : raw.replace(/\s+/g, " ").slice(0, 160);
+}
+function parseResult(body) {
+  const raw = body.trim();
+  let payload = raw.startsWith("{") ? payloadOf(raw) : void 0;
+  if (payload === void 0) {
+    const saved = SAVED_PATH.exec(raw);
+    if (saved) {
+      if (!existsSync(saved[1])) return { page: null, error: `file della risposta non trovato (${basename(saved[1])})` };
+      payload = payloadOf(readFileSync(saved[1], "utf8"));
+      if (payload === void 0) return { page: null, error: `file della risposta non leggibile (${basename(saved[1])})` };
+    }
+  }
+  if (payload === void 0) return { page: null, error: unreadable(raw) };
+  try {
+    return { page: parseScatolaPayload(payload), error: null };
   } catch (e) {
-    return { page: null, error: e instanceof Error ? e.message.slice(0, 200) : "risposta non leggibile" };
+    return { page: null, error: e instanceof ScatolaError ? e.message.slice(0, 200) : "risposta non leggibile" };
   }
 }
 function readCalls(transcript, since) {
@@ -1580,7 +1604,7 @@ async function next(args) {
   const guests = follow(calls, {
     view: "curated_guest_stays",
     filters: [{ field: "stay_start", op: "gte", value: run.from }, { field: "stay_start", op: "lte", value: run.to }, { field: "is_primary_guest", op: "eq", value: true }],
-    limit: PAGE_LIMIT
+    limit: GUEST_LIMIT
   });
   broken(guests, "lettura dei prenotanti");
   if (guests.next) ask(guests.next, `prenotanti registrati, ${guests.rows.length} letti.`);
