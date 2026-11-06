@@ -1285,6 +1285,7 @@ var RUN_FILE = join(WORK, "run.json");
 var IN_LIMIT = 50;
 var PAGE_LIMIT = 500;
 var GUEST_LIMIT = 15;
+var GROUP_NAME_MIN_ROOMS = 2;
 var MAX_FAILURES = 3;
 var BOOTSTRAP_BY_DATE = 400;
 var FRESHNESS_RANK = { fresh: 0, unknown: 1, stale: 2, failing: 3 };
@@ -1601,18 +1602,57 @@ async function next(args) {
     const numbers = stale.slice(0, IN_LIMIT).map((id) => Number(numberOf(id)));
     ask({ view: "curated_order_balances", filters: [{ field: "order_number", op: "in", value: numbers }], limit: PAGE_LIMIT }, `importi aggiornati dei possibili gruppi: ne mancano ${stale.length}.`);
   }
-  const guests = follow(calls, {
-    view: "curated_guest_stays",
-    filters: [{ field: "stay_start", op: "gte", value: run.from }, { field: "stay_start", op: "lte", value: run.to }, { field: "is_primary_guest", op: "eq", value: true }],
-    limit: GUEST_LIMIT
-  });
-  broken(guests, "lettura dei prenotanti");
-  if (guests.next) ask(guests.next, `prenotanti registrati, ${guests.rows.length} letti.`);
+  const contactCalls = calls.filter((c) => isPlain(c, "curated_reservation_contacts") && c.page && Array.isArray(c.input.filters));
+  for (const c of contactCalls) {
+    if (contactCalls.filter((x) => x.input.cursor === c.input.cursor && JSON.stringify(x.input.filters) === JSON.stringify(c.input.filters)).length > MAX_FAILURES + 1) fail("nomi dei prenotanti: la stessa richiesta continua a ripetersi.");
+  }
+  const contactFailures = calls.filter((c) => c.input.view === "curated_reservation_contacts" && !c.page).length;
+  if (contactFailures >= MAX_FAILURES * 3) fail(`nomi dei prenotanti: ${contactFailures} tentativi falliti.`);
+  const personName = (r) => {
+    const first = text2(r.first_name);
+    const last = text2(r.last_name);
+    if (first || last) return { first, last };
+    const org = text2(r.organization_name);
+    return org ? { first: "", last: org } : null;
+  };
+  const named = /* @__PURE__ */ new Map();
+  for (const c of contactCalls) {
+    for (const r of c.page.data) {
+      if (!isRecord3(r) || !text2(r.order_id) || named.has(text2(r.order_id))) continue;
+      const n = personName(r);
+      if (!n) continue;
+      named.set(text2(r.order_id), { first: n.first, last: n.last, email: text2(r.primary_email) || text2(r.company_email), phone: text2(r.primary_phone_number) || text2(r.company_phone) });
+    }
+    const cursor = c.page.nextCursor;
+    if (cursor && !contactCalls.some((x) => x.input.cursor === cursor && JSON.stringify(x.input.filters) === JSON.stringify(c.input.filters))) ask({ view: "curated_reservation_contacts", filters: c.input.filters, limit: PAGE_LIMIT, cursor }, "nomi dei prenotanti: la risposta precedente continua.");
+  }
+  const askedContacts = /* @__PURE__ */ new Set();
+  for (const c of contactCalls) for (const f of c.input.filters) if (isRecord3(f) && f.field === "order_id" && f.op === "in" && Array.isArray(f.value)) for (const v of f.value) askedContacts.add(String(v));
+  const previousName = /* @__PURE__ */ new Map();
+  if (previous) {
+    const idByNumber = new Map(previous.orders.map((o) => [o.orderNumber, o.orderId]));
+    for (const r of previous.rows) {
+      const id = idByNumber.get(r.slopeId);
+      if (id && (r.firstName || r.lastName) && !previousName.has(id)) previousName.set(id, { first: r.firstName, last: r.lastName, email: r.email, phone: r.phone });
+    }
+  }
+  const wantNames = needed.filter((id) => (stayOrder.get(id) || 0) >= GROUP_NAME_MIN_ROOMS && !named.has(id) && !askedContacts.has(id) && !previousName.has(id));
+  if (wantNames.length) ask({ view: "curated_reservation_contacts", filters: [{ field: "order_id", op: "in", value: wantNames.slice(0, IN_LIMIT) }], limit: PAGE_LIMIT }, `nomi dei prenotanti dei gruppi: ne mancano ${wantNames.length}.`);
+  const firstReservation = /* @__PURE__ */ new Map();
+  for (const r of stays.rows) if (isRecord3(r) && text2(r.order_id) && !firstReservation.has(text2(r.order_id))) firstReservation.set(text2(r.order_id), text2(r.reservation_id));
+  const guestRows = [];
+  for (const id of needed) {
+    const n = named.get(id) || previousName.get(id);
+    const reservationId = firstReservation.get(id);
+    if (!n || !reservationId) continue;
+    guestRows.push({ reservation_id: reservationId, order_customer_first_name: n.first, order_customer_last_name: n.last, order_customer_primary_email: n.email, order_customer_primary_phone_number: n.phone });
+  }
+  const guests = { pages: contactCalls };
   const balanceRows = needed.map((id) => read.get(id) || cached.get(id)).filter((r) => r !== void 0);
   const used = [...stays.pages, ...recent.pages, ...inCalls, ...guests.pages];
   let snap;
   try {
-    snap = buildSnapshot({ from: run.from, to: run.to, fetchedAt: stays.pages[0].at, freshness: worst(used), stayRows: stays.rows, balanceRows, guestRows: guests.rows });
+    snap = buildSnapshot({ from: run.from, to: run.to, fetchedAt: stays.pages[0].at, freshness: worst(used), stayRows: stays.rows, balanceRows, guestRows });
   } catch (e) {
     return fail(e instanceof ScatolaError ? e.message : "dati non coerenti.");
   }
