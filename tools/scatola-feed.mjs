@@ -1563,7 +1563,7 @@ async function next(args) {
       cached.set(o.orderId, { order_id: o.orderId, order_number: o.orderNumber, creation_date: o.createdAt, order_total: o.total, collected_amount: o.collected, collected_refunded_amount: o.refunded, open_balance: o.openBalance });
     }
   }
-  const sinceDate = previous ? shiftDay(previous.generated.slice(0, 10), -2) : needed.length > run.byDateOver ? shiftDay(run.today, -560) : null;
+  const sinceDate = previous ? [shiftDay(previous.generated.slice(0, 10), -2), shiftDay(run.today, -7)].sort()[0] : needed.length > run.byDateOver ? shiftDay(run.today, -560) : null;
   const none = { pages: [], rows: [], next: null, failures: 0, starts: 0 };
   const recent = sinceDate ? follow(calls, { view: "curated_order_balances", filters: [{ field: "creation_date", op: "gte", value: sinceDate }], order_by: [{ field: "creation_date", direction: "asc" }], limit: PAGE_LIMIT }) : none;
   broken(recent, "lettura degli ordini recenti");
