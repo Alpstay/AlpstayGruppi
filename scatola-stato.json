@@ -1,1 +1,1 @@
-{"at":"2026-11-11T21:59:09.120Z","ok":true,"messaggio":"Dati pubblicati.","generated":"2026-11-11T21:46:43.387Z","camere":3805,"ordini":2404,"chiamate":54,"nota":"registro /root/.claude/projects/-home-claude-alpstaygruppi/68bbe3f7-8d3b-5f11-bd15-45e2c3619f4c.jsonl (contiene il segno di questa esecuzione; registri trovati: 1); interrogazioni viste finora: 54"}
+{"at":"2026-11-12T06:48:09.911Z","ok":false,"messaggio":"lettura dei soggiorni: 3 tentativi falliti. Ultimo errore: Invalid input: correct the named field and use the allowed value or bound."}
